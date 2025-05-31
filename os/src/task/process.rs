@@ -49,6 +49,23 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// 死锁检测标志
+    /// 
+    /// 当设置为 true 时，系统会在获取互斥锁和信号量时进行死锁检测
+    /// 如果检测到可能发生死锁，将拒绝资源分配请求
+    pub deadlock_detect: bool,
+    /// 信号量资源可用数量数组
+    /// 
+    /// 数组索引对应信号量ID，值表示该信号量当前可用的资源数量
+    /// 用于死锁检测算法中的资源分配检查
+    pub semaphore_avail: Vec<usize>,
+    /// 互斥锁资源可用状态数组
+    /// 
+    /// 数组索引对应互斥锁ID，值表示该互斥锁的可用状态：
+    /// * 1 - 互斥锁可用
+    /// * 0 - 互斥锁已被占用
+    /// 用于死锁检测算法中的资源分配检查
+    pub mutex_avail: Vec<usize>,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +136,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    semaphore_avail: Vec::new(),
+                    mutex_avail: Vec::new(),
                 })
             },
         });
@@ -129,7 +149,10 @@ impl ProcessControlBlock {
             true,
         ));
         // prepare trap_cx of main thread
-        let task_inner = task.inner_exclusive_access();
+        let mut task_inner = task.inner_exclusive_access();
+        task_inner.mutex_status = Vec::new();
+        task_inner.semaphore_status = Vec::new();
+
         let trap_cx = task_inner.get_trap_cx();
         let ustack_top = task_inner.res.as_ref().unwrap().ustack_top();
         let kstack_top = task.kstack.get_top();
@@ -245,6 +268,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    semaphore_avail: Vec::new(),
+                    mutex_avail: Vec::new(),
                 })
             },
         });
@@ -269,7 +295,10 @@ impl ProcessControlBlock {
         child_inner.tasks.push(Some(Arc::clone(&task)));
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
-        let task_inner = task.inner_exclusive_access();
+        let mut task_inner = task.inner_exclusive_access();
+        task_inner.semaphore_status = Vec::new();
+        task_inner.mutex_status = Vec::new();
+        
         let trap_cx = task_inner.get_trap_cx();
         trap_cx.kernel_sp = task.kstack.get_top();
         drop(task_inner);

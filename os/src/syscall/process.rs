@@ -1,10 +1,11 @@
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_ref, translated_refmut, translated_str,PageTable, VirtAddr, translated_byte_buffer},
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags,
     },
+    timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -151,12 +152,53 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    trace!("kernel: sys_get_time");
+    let token = current_user_token();
+    let page_table = PageTable::from_token(token);
+    
+    // 检查地址是否有效
+    let ts_va = VirtAddr::from(ts as usize);
+    let ts_vpn = ts_va.floor();
+    if let Some(pte) = page_table.translate(ts_vpn) {
+        if !pte.is_valid() || !pte.writable() {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+    
+    // 获取当前时间
+    let time_us = get_time_us();
+    let sec = time_us / 1_000_000;
+    let usec = time_us % 1_000_000;
+    
+    // 将时间写入用户空间
+    let mut ts_buffers = translated_byte_buffer(token, ts as *const u8, core::mem::size_of::<TimeVal>());
+    if ts_buffers.is_empty() {
+        return -1;
+    }
+    
+    // 直接写入 TimeVal 结构体
+    let time_val = TimeVal { sec, usec };
+    let time_val_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &time_val as *const TimeVal as *const u8,
+            core::mem::size_of::<TimeVal>()
+        )
+    };
+    
+    let mut offset = 0;
+    for buffer in ts_buffers.iter_mut() {
+        let len = buffer.len();
+        if offset + len > time_val_bytes.len() {
+            break;
+        }
+        buffer.copy_from_slice(&time_val_bytes[offset..offset + len]);
+        offset += len;
+    }
+    
+    0
 }
 
 /// mmap syscall

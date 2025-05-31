@@ -1,9 +1,9 @@
 use crate::{
     mm::kernel_token,
-    task::{add_task, current_task, TaskControlBlock},
+    task::{add_task, current_task, MutexStatus, SemaphoreStatus, TaskControlBlock},
     trap::{trap_handler, TrapContext},
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 /// thread create syscall
 pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     trace!(
@@ -31,10 +31,24 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     ));
     // add new task to scheduler
     add_task(Arc::clone(&new_task));
-    let new_task_inner = new_task.inner_exclusive_access();
+    let mut new_task_inner = new_task.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+    
+    // 初始化信号量和互斥锁状态数组
+    new_task_inner.semaphore_status = Vec::new();
+    new_task_inner.mutex_status = Vec::new();
+
+
+    // 初始化新线程的互斥锁和信号量状态
+    new_task_inner.mutex_status = (0..process_inner.mutex_list.len())
+        .map(|_| MutexStatus { allocated: 0, needed: 0 })
+        .collect();
+
+    new_task_inner.semaphore_status = (0..process_inner.semaphore_list.len())
+        .map(|_| SemaphoreStatus { allocated: 0, needed: 0 })
+        .collect();
     let new_task_res = new_task_inner.res.as_ref().unwrap();
     let new_task_tid = new_task_res.tid;
-    let mut process_inner = process.inner_exclusive_access();
     // add new thread to current process
     let tasks = &mut process_inner.tasks;
     while tasks.len() < new_task_tid + 1 {
